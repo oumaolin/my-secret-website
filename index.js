@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000; // 优先使用 Render 提供的端口
 
 // 指定访问记录的 JSON 文件
 const visitsFile = 'visits.json';
