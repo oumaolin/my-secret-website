@@ -1,66 +1,58 @@
 const express = require('express');
-const fs = require('fs');
+const { Pool } = require('pg');
 const path = require('path');
 
+// Express 应用设置
 const app = express();
-const port = process.env.PORT || 3000; // 使用动态端口（Render 提供的环境变量）
+const port = 3000;
 
-// 指定访问记录的 JSON 文件
-const visitsFile = 'visits.json';
-
-// 读取访问记录
-function readVisits() {
-  try {
-    const data = fs.readFileSync(visitsFile, 'utf8');
-    return JSON.parse(data);
-  } catch (error) {
-    // 如果文件不存在或者解析出错，返回空数组
-    return [];
-  }
-}
-
-// 写入访问记录
-function writeVisits(visits) {
-  fs.writeFileSync(visitsFile, JSON.stringify(visits, null, 2));
-}
-
-// 静态托管 public 文件夹，让浏览器可以访问里面的 index.html
-app.use(express.static(path.join(__dirname, 'public')));
-
-// 定义你的“秘密”路径
-const secretPath = '/secret-abc123';
-
-// 处理对秘密路径的 GET 请求
-app.get(secretPath, (req, res) => {
-  // 获取来访 IP。若有反向代理，可考虑使用 req.headers['x-forwarded-for']
-  const visitorIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-
-  // 获取访问时间
-  const visitTime = new Date().toISOString();
-
-  // 从文件中读取当前已有的访问记录
-  const visits = readVisits();
-
-  // 构造新的访问记录
-  const newVisit = {
-    ip: visitorIp,
-    time: visitTime,
-  };
-
-  // 将新记录加入到数组里
-  visits.push(newVisit);
-
-  // 写回文件
-  writeVisits(visits);
-
-  // 给予访问者一个简单的响应
-  res.send('访问已记录！这是一个秘密链接，你的访问已被记录。');
+// PostgreSQL 数据库连接池
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'YOUR_RENDER_DATABASE_URL', // 替换为 Render 提供的连接字符串
+  ssl: { rejectUnauthorized: false }, // 启用 SSL
 });
 
-// 添加一个路由以通过 HTTP 查看 visits.json 文件内容
-app.get('/get-visits', (req, res) => {
-  const visits = readVisits();
-  res.json(visits); // 将文件内容返回为 JSON 格式
+// 创建访问记录表（如果不存在）
+async function createTable() {
+  const query = `
+    CREATE TABLE IF NOT EXISTS visits (
+      id SERIAL PRIMARY KEY,
+      ip VARCHAR(255),
+      visit_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `;
+  await pool.query(query);
+  console.log("Table 'visits' is ready.");
+}
+createTable();
+
+// 静态托管 public 文件夹
+app.use(express.static(path.join(__dirname, 'public')));
+
+// 定义秘密路径
+const secretPath = '/secret-abc123';
+
+// 记录访问日志
+app.get(secretPath, async (req, res) => {
+  const visitorIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  try {
+    await pool.query('INSERT INTO visits (ip) VALUES ($1)', [visitorIp]);
+    res.send('访问已记录！这是一个秘密链接，你的访问已被记录。');
+  } catch (err) {
+    console.error("Error recording visit:", err);
+    res.status(500).send("记录访问失败");
+  }
+});
+
+// 提供接口查看访问记录
+app.get('/get-visits', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM visits ORDER BY visit_time DESC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error fetching visits:", err);
+    res.status(500).send("无法获取访问记录");
+  }
 });
 
 // 启动服务器
